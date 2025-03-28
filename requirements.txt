@@ -1,0 +1,15 @@
+selenium==4.15.2
+SQLAlchemy==2.0.23
+aiogram>=3.0.0
+python-dotenv>=1.0.0
+undetected-chromedriver==3.5.3
+requests>=2.31.0
+psutil==5.9.6
+webdriver-manager==4.0.1
+setuptools
+loguru==0.7.2
+pandas>=2.0.0
+xlsxwriter>=3.1.0
+openpyxl>=3.1.0
+beautifulsoup4>=4.12.0
+aiohttp>=3.9.0
