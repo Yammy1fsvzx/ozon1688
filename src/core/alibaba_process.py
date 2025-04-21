@@ -287,9 +287,10 @@ class AlibabaProcessor:
             # Сохраняем исходные вкладки
             original_windows = self.driver.window_handles
             
-            # Переходим на главную страницу 1688.com
-            logger.info("Переход на 1688.com")
-            self.driver.get("https://www.1688.com/")
+            # Переходим на страницу поиска 1688.com (по вашему запросу)
+            search_page_url = "https://s.1688.com/selloffer/offer_search.htm"
+            logger.info(f"Переход на страницу поиска: {search_page_url}")
+            self.driver.get(search_page_url)
             
             # Однократная проверка на всплывающие окна после загрузки страницы
             time.sleep(1)
@@ -298,32 +299,85 @@ class AlibabaProcessor:
             # Быстрая проверка на блокировку всплывающих окон
             self._handle_browser_permissions()
             
-            # Находим кнопку поиска по изображению и выполняем загрузку
-            try:
-                upload_button = WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "img-search-upload"))
-                )
-                upload_button.send_keys(image_path)
-                logger.info("Изображение загружено для поиска")
-            except Exception as e:
-                # В случае ошибки - закрываем возможные окна и пробуем снова
-                self._close_popup_windows()
+            # --- Начало блока повторных попыток загрузки изображения ---
+            upload_success = False
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"Попытка загрузки изображения {attempt}/{max_attempts}...")
                 try:
-                    upload_button = WebDriverWait(self.driver, 5).until(
+                    # Закрываем возможные окна перед каждой попыткой
+                    self._close_popup_windows()
+                    
+                    # Ищем кнопку загрузки
+                    upload_input = WebDriverWait(self.driver, 5).until(
                         EC.presence_of_element_located((By.ID, "img-search-upload"))
                     )
-                    upload_button.send_keys(image_path)
-                    logger.info("Изображение загружено для поиска (2-я попытка)")
-                except:
-                    logger.error("Не удалось загрузить изображение после двух попыток")
-                    return False
+                    
+                    # Проверяем, видим ли элемент (иногда он скрыт)
+                    if not upload_input.is_displayed():
+                        logger.warning("Кнопка загрузки найдена, но не видна. Попытка сделать видимой...")
+                        self.driver.execute_script("arguments[0].style.display = 'block'; arguments[0].style.visibility = 'visible';", upload_input)
+                        time.sleep(0.5)
+                    
+                    # --- Добавляем логирование пути --- 
+                    logger.debug(f"Attempting send_keys with image path: {image_path}")
+                    # --- Конец логирования пути ---
+                    
+                    # Загружаем файл
+                    upload_input.send_keys(image_path)
+                    logger.info("Изображение успешно отправлено в input.")
+                    
+                    # --- Добавляем клик по кнопке поиска --- 
+                    try:
+                        logger.info("Попытка найти и нажать кнопку '搜索图片' (Search image)...")
+                        search_button = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-btn")) 
+                        )
+                        search_button.click()
+                        logger.info("Кнопка '搜索图片' успешно нажата.")
+                        upload_success = True # Подтверждаем успех всей операции загрузки + клика
+                        break # Выходим из цикла, если все успешно
+                    except TimeoutException:
+                        logger.warning("Кнопка '搜索图片' не найдена или не кликабельна после загрузки файла.")
+                        # Не выходим из цикла, даем шанс на следующей попытке send_keys
+                    except Exception as click_err:
+                        logger.error(f"Ошибка при клике на кнопку '搜索图片': {click_err}")
+                        # Не выходим из цикла
+                    # --- Конец клика по кнопке поиска ---
+                    
+                    # Если клик не удался, но send_keys прошел, возможно, автоматический поиск сработал
+                    # В этом случае мы все равно выйдем из цикла на следующей итерации, если upload_success = True
+                    # Но если клик был нужен, но не удался, мы продолжим цикл
+                    if upload_success:
+                         break # Выходим, если send_keys и клик (если он был нужен и найден) прошли успешно
+                    
+                except TimeoutException:
+                    logger.warning(f"Кнопка загрузки не найдена на попытке {attempt}")
+                except Exception as e:
+                    logger.error(f"Ошибка при загрузке изображения на попытке {attempt}: {e}")
+                
+                # Если попытка не удалась и это не последняя попытка
+                if not upload_success and attempt < max_attempts:
+                    logger.info(f"Ожидание перед следующей попыткой...")
+                    time.sleep(2) # Пауза перед следующей попыткой
+            
+            # Если все попытки не увенчались успехом
+            if not upload_success:
+                logger.error("Не удалось загрузить изображение после всех попыток.")
+                return False
+            # --- Конец блока повторных попыток загрузки изображения ---
+            
+            # Добавляем проверку окон сразу после загрузки изображения
+            logger.info("Проверка всплывающих окон после загрузки изображения...")
+            self._close_popup_windows()
+            time.sleep(1) # Небольшая пауза после проверки
             
             # Запоминаем текущий URL
             current_url = self.driver.current_url
             
             # Ждем результаты поиска с минимальным количеством проверок окон
             wait_time = 0
-            max_wait_time = 30
+            max_wait_time = 60 # Увеличено время ожидания до 60 секунд
             
             while wait_time < max_wait_time:
                 # Проверяем всплывающие окна только каждые 10 секунд
@@ -801,6 +855,27 @@ class AlibabaProcessor:
             
             if captcha_container:
                 self._handle_captcha()
+                
+            # Добавляем проверку и закрытие баннера _guide-use-hongbao
+            try:
+                banner_closed = self.driver.execute_script(
+                    """
+                    var banner = document.querySelector('._guide-use-hongbao_sm0it_30');
+                    if (banner && window.getComputedStyle(banner).display !== 'none') {
+                        var closeButton = banner.querySelector('._guide-use-close_sm0it_53');
+                        if (closeButton) {
+                            closeButton.click();
+                            return true; // Баннер был найден и закрыт
+                        }
+                    }
+                    return false; // Баннер не найден или не был закрыт
+                    """
+                )
+                if banner_closed:
+                    logger.info("Закрыт баннер _guide-use-hongbao")
+                    time.sleep(0.2) # Небольшая пауза после закрытия
+            except Exception as banner_err:
+                logger.warning(f"Ошибка при попытке закрыть баннер _guide-use-hongbao: {banner_err}")
             
             return True
         except Exception as e:

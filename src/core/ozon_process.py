@@ -31,50 +31,95 @@ class OzonProcessor:
     def process_product_page(self):
         """
         Обрабатывает страницу товара Ozon и извлекает данные
+        Реализован механизм повторных попыток с перезагрузкой страницы
         
-        :return: Словарь с данными о товаре
+        :return: Словарь с данными о товаре или None, если не удалось
         """
-        logger.info("Начинаем обработку страницы товара")
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            logger.info(f"Обработка страницы товара Ozon (Попытка {attempt}/{max_attempts})")
+            try:
+                # 1. Ждем загрузки ключевого элемента - названия товара
+                logger.debug("Ожидание загрузки названия товара...")
+                name_selectors = [
+                    "div[data-widget='webProductHeading'] h1",
+                    "h1.lz6_28",
+                    "h1.tsHeadline550Medium"
+                ]
+                # Используем WebDriverWait для ожидания появления *любого* из селекторов названия
+                # Собираем локаторы
+                name_locators = [(By.CSS_SELECTOR, selector) for selector in name_selectors]
+                
+                # Ждем появления хотя бы одного элемента с названием
+                WebDriverWait(self.driver, self.timeout).until(
+                    EC.any_of(*[EC.presence_of_element_located(loc) for loc in name_locators])
+                )
+                logger.debug("Название товара загружено")
+                
+                # 2. Извлекаем основные данные
+                product_id = self._extract_product_id()
+                product_name = self._get_product_name()
+                current_price = self._get_current_price()
+                original_price = self._get_original_price()
+                images = self.get_product_images()
+                characteristics = self._get_product_characteristics()
+                
+                # 3. Проверяем, что основные данные были извлечены
+                if not product_name or current_price == 0:
+                    logger.warning(f"Основные данные (название или цена) не найдены на попытке {attempt}")
+                    # Если это последняя попытка, выбрасываем исключение
+                    if attempt == max_attempts:
+                        raise Exception("Не удалось извлечь основные данные после нескольких попыток.")
+                    # Иначе, перезагружаем страницу и пробуем снова
+                    logger.info("Перезагрузка страницы...")
+                    self.driver.refresh()
+                    time.sleep(3) # Даем время на перезагрузку
+                    continue # Переходим к следующей попытке
+                
+                # 4. Обрабатываем извлеченные данные
+                weight_and_dimensions = extract_weight_and_dimensions(characteristics)
+                price_usd = convert_price_to_usd(current_price, 'RUB')
+                
+                product_data = {
+                    'product_id': product_id,
+                    'timestamp': datetime.now().isoformat(),
+                    'url': self.driver.current_url,
+                    'product_name': product_name,
+                    'price_current': current_price,
+                    'price_original': original_price,
+                    'price_usd': price_usd,
+                    'images': images,
+                    'characteristics': characteristics,
+                    'weight': weight_and_dimensions['weight'],
+                    'dimensions': weight_and_dimensions['dimensions']
+                }
+                
+                logger.info("Обработка страницы товара успешно завершена")
+                return product_data
+                
+            except TimeoutException:
+                logger.warning(f"Таймаут ожидания загрузки названия товара на попытке {attempt}")
+                if attempt == max_attempts:
+                    logger.error("Не удалось дождаться загрузки страницы после нескольких попыток.")
+                    return None
+                logger.info("Перезагрузка страницы...")
+                self.driver.refresh()
+                time.sleep(3)
+                continue
+                
+            except Exception as e:
+                logger.error(f"Ошибка при обработке страницы товара на попытке {attempt}: {e}")
+                if attempt == max_attempts:
+                    logger.error("Не удалось обработать страницу после нескольких попыток.")
+                    return None
+                logger.info("Перезагрузка страницы...")
+                self.driver.refresh()
+                time.sleep(3)
+                continue
         
-        # Извлекаем ID товара
-        product_id = self._extract_product_id()
-        
-        # Извлекаем название товара
-        product_name = self._get_product_name()
-        
-        # Извлекаем цены
-        current_price = self._get_current_price()
-        original_price = self._get_original_price()
-        
-        # Извлекаем изображения
-        images = self.get_product_images()
-        
-        # Извлекаем характеристики
-        characteristics = self._get_product_characteristics()
-        
-        # Извлекаем вес и габариты
-        weight_and_dimensions = extract_weight_and_dimensions(characteristics)
-        
-        # Конвертируем цены в USD
-        price_usd = convert_price_to_usd(current_price, 'RUB')
-        
-        # Инициализируем структуру данных для хранения информации о товаре
-        product_data = {
-            'product_id': product_id,
-            'timestamp': datetime.now().isoformat(),
-            'url': self.driver.current_url,
-            'product_name': product_name,
-            'price_current': current_price,
-            'price_original': original_price,
-            'price_usd': price_usd,
-            'images': images,
-            'characteristics': characteristics,
-            'weight': weight_and_dimensions['weight'],
-            'dimensions': weight_and_dimensions['dimensions']
-        }
-        
-        logger.info("Обработка страницы товара завершена")
-        return product_data
+        # Если все попытки не удались
+        logger.error("Не удалось обработать страницу товара Ozon после всех попыток.")
+        return None
     
     def _extract_product_id(self):
         """

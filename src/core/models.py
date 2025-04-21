@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -117,6 +117,35 @@ class ProductProfitability(Base):
     def __repr__(self):
         return f"<ProductProfitability(id={self.id}, profit=${self.total_profit:.2f}, margin={self.profitability_percent:.2f}%)>"
 
+class User(Base):
+    """
+    Модель для хранения пользователей бота
+    """
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    username = Column(String)
+    first_name = Column(String)
+    last_name = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)  # Поле для определения администраторов
+    notifications_enabled = Column(Boolean, default=True)  # Поле для управления уведомлениями
+    
+    # Поля для подписки
+    subscription_end = Column(DateTime, nullable=True)  # Дата окончания подписки
+    subscription_type = Column(String, nullable=True)  # Тип подписки: 'free', 'limited', 'unlimited'
+    requests_limit = Column(Integer, nullable=True)  # Лимит запросов для limited подписки
+    requests_used = Column(Integer, default=0)  # Количество использованных запросов
+    subscription_price = Column(Float, nullable=True)  # Цена подписки
+    
+    # Связь с задачами
+    tasks = relationship("Task", back_populates="user")
+    
+    def __repr__(self):
+        return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}', is_admin={self.is_admin}, subscription_type='{self.subscription_type}')>"
+
 class Task(Base):
     """
     Модель для хранения задач на обработку
@@ -137,6 +166,10 @@ class Task(Base):
     status = Column(String, nullable=False, default='pending')
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Связь с пользователем
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user = relationship("User", back_populates="tasks")
     
     # Связь с продуктом
     product = relationship("OzonProduct", back_populates="task", uselist=False) 

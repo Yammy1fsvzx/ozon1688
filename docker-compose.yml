@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: ozon1688_bot
+    volumes:
+      - ./data:/app/data  # Для хранения базы данных
+      - ./logs:/app/logs  # Для хранения логов
+    env_file:
+      - .env
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+    networks:
+      - ozon1688_network
+
+networks:
+  ozon1688_network:
+    driver: bridge 

@@ -14,6 +14,8 @@ Telegram бот для анализа товаров Ozon и поиска ана
 
 ## Установка
 
+### Вариант 1: Локальная установка
+
 1. Клонируйте репозиторий:
 ```bash
 git clone https://github.com/yourusername/Ozon1688.git
@@ -37,22 +39,49 @@ pip install -r requirements.txt
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ```
 
+### Вариант 2: Установка через Docker
+
+1. Клонируйте репозиторий:
+```bash
+git clone https://github.com/yourusername/Ozon1688.git
+cd Ozon1688
+```
+
+2. Создайте файл `.env` в корневой директории проекта и добавьте в него:
+```
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+```
+
+3. Запустите приложение через Docker Compose:
+```bash
+docker-compose up -d
+```
+
 ## Использование
+
+### Локальный запуск
 
 1. Запустите бота:
 ```bash
 python src/main.py
 ```
 
-2. Отправьте боту ссылку на товар с Ozon в одном из форматов:
-- https://www.ozon.ru/product/...
-- https://ozon.ru/t/...
+### Docker
 
-3. Используйте кнопки меню для:
-- Просмотра статистики
-- Получения отчета в Excel
-- Просмотра активных задач
-- Получения справки
+1. Запуск:
+```bash
+docker-compose up -d
+```
+
+2. Остановка:
+```bash
+docker-compose down
+```
+
+3. Просмотр логов:
+```bash
+docker-compose logs -f
+```
 
 ## Структура проекта
 
@@ -65,14 +94,19 @@ Ozon1688/
 │   ├── core/
 │   │   ├── database.py
 │   │   └── models.py
-│   ├── utils/
-│   │   ├── logger.py
-│   │   ├── utils.py
-│   │   └── excel_generator.py
-│   └── main.py
+│   └── utils/
+│       ├── logger.py
+│       ├── utils.py
+│       └── excel_generator.py
+│
+├── logs/           # Директория для логов
 ├── requirements.txt
 ├── .env
-└── README.md
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── README.md
+└── main.py
 ```
 
 ## Лицензия

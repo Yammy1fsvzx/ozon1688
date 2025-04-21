@@ -4,11 +4,12 @@
 from sqlalchemy import create_engine, and_, func
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from src.core.models import Base, MatchedProduct, Task, OzonProduct, AlibabaProduct, ProductProfitability
+from src.core.models import Base, MatchedProduct, Task, OzonProduct, AlibabaProduct, ProductProfitability, User
 from src.utils.logger import logger
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import json
+import os
 
 from src.utils.utils import convert_price_to_usd
 
@@ -41,36 +42,26 @@ class Database:
         if self.Session:
             self.Session.remove()
     
-    def add_task(self, url: str) -> bool:
+    def add_task(self, url: str, user_id: int) -> bool:
         """
         Добавление новой задачи
         
         :param url: URL товара
+        :param user_id: ID пользователя
         :return: True если добавление успешно, False если нет
         """
         session = self.get_session()
         try:
-            # Проверяем, существует ли уже такая задача
-            existing_task = session.query(Task).filter_by(url=url).first()
-            if existing_task:
-                logger.info(f"Удаляем существующую задачу для URL {url}")
-                # Удаляем связанные товары
-                session.query(OzonProduct).filter_by(task_id=existing_task.id).delete()
-                # Удаляем саму задачу
-                session.delete(existing_task)
-                session.commit()
-            
-            # Создаем новую задачу
-            task = Task(url=url, status='pending')
+            task = Task(url=url, user_id=user_id)
             session.add(task)
             session.commit()
-            logger.info(f"Добавлена новая задача для URL: {url}")
             return True
-            
         except Exception as e:
-            logger.error(f"Ошибка при добавлении задачи: {e}")
             session.rollback()
+            logger.error(f"Ошибка при добавлении задачи: {e}")
             return False
+        finally:
+            session.close()
     
     def is_url_exists(self, url: str) -> bool:
         """
@@ -111,6 +102,68 @@ class Database:
         try:
             task = session.query(Task).filter(Task.id == task_id).first()
             return task.url if task else None
+        finally:
+            session.close()
+    
+    def get_task(self, task_id: int):
+        """
+        Получение задачи по ID
+        
+        :param task_id: ID задачи
+        :return: Объект задачи или None
+        """
+        session = self.get_session()
+        try:
+            task = session.query(Task).filter(Task.id == task_id).first()
+            return task
+        except Exception as e:
+            logger.error(f"Ошибка при получении задачи: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def get_task_analogs(self, task_id: int):
+        """
+        Получение аналогов товара по ID задачи
+        
+        :param task_id: ID задачи
+        :return: Список аналогов или None
+        """
+        session = self.get_session()
+        try:
+            # Получаем товар Ozon для задачи
+            ozon_product = session.query(OzonProduct).filter_by(task_id=task_id).first()
+            if not ozon_product:
+                return None
+                
+            # Получаем соответствия для этого товара
+            matches = session.query(MatchedProduct).filter_by(ozon_product_id=ozon_product.id).all()
+            if not matches:
+                return None
+                
+            # Получаем аналоги из Alibaba
+            analogs = []
+            for match in matches:
+                alibaba_product = session.query(AlibabaProduct).filter_by(id=match.alibaba_product_id).first()
+                if alibaba_product:
+                    # Получаем данные о прибыльности
+                    profitability = session.query(ProductProfitability).filter_by(match_id=match.id).first()
+                    
+                    # Создаем объект аналога с нужными данными
+                    analog = {
+                        'title': alibaba_product.title,
+                        'url': alibaba_product.url,
+                        'price': alibaba_product.price_usd,
+                        'profit': profitability.total_profit if profitability else 0,
+                        'margin': profitability.profitability_percent if profitability else 0
+                    }
+                    analogs.append(analog)
+            
+            return analogs
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении аналогов товара: {e}")
+            return None
         finally:
             session.close()
     
@@ -628,76 +681,43 @@ class Database:
             if session:
                 session.close()
 
-    def get_tasks_statistics(self) -> dict:
+    def get_tasks_statistics(self, user_id: int = None) -> dict:
         """
         Получение статистики по задачам
         
+        :param user_id: ID пользователя (опционально)
         :return: Словарь со статистикой
         """
-        session = None
+        session = self.get_session()
         try:
-            session = self.get_session()
+            query = session.query(Task)
+            if user_id:
+                query = query.filter(Task.user_id == user_id)
             
-            # Получаем общее количество задач
-            total_tasks = session.query(Task).count()
-            
-            # Получаем количество задач по статусам
-            status_counts = {}
-            for status in ['pending', 'ozon_processed', 'completed', 'error', 'fatal', 'not_found', 'failed']:
-                count = session.query(Task).filter_by(status=status).count()
-                status_counts[status] = count
-            
-            # Получаем количество успешно обработанных товаров (с маржинальностью)
-            completed_products = session.query(ProductProfitability).count()
-            
-            # Получаем среднюю маржинальность
-            avg_profitability = session.query(func.avg(ProductProfitability.profitability_percent)).scalar()
-            if avg_profitability:
-                avg_profitability = round(avg_profitability, 2)
-            
-            # Получаем последние 5 обработанных товаров
-            last_products = session.query(
-                OzonProduct.product_name,
-                OzonProduct.url.label('ozon_url'),
-                AlibabaProduct.url.label('alibaba_url'),
-                ProductProfitability.profitability_percent,
-                ProductProfitability.created_at
-            ).join(
-                MatchedProduct,
-                MatchedProduct.ozon_product_id == OzonProduct.id
-            ).join(
-                AlibabaProduct,
-                AlibabaProduct.id == MatchedProduct.alibaba_product_id
-            ).join(
-                ProductProfitability,
-                ProductProfitability.match_id == MatchedProduct.id
-            ).order_by(
-                ProductProfitability.created_at.desc()
-            ).limit(5).all()
+            total_tasks = query.count()
+            completed_tasks = query.filter(Task.status == 'completed').count()
+            not_found_tasks = query.filter(Task.status == 'not_found').count()
+            error_tasks = query.filter(Task.status == 'error').count()
+            failed_tasks = query.filter(Task.status == 'failed').count()
+            fatal_tasks = query.filter(Task.status == 'fatal').count()
+            pending_tasks = query.filter(Task.status == 'pending').count()
+            ozon_processed_tasks = query.filter(Task.status == 'ozon_processed').count()
             
             return {
-                'total_tasks': total_tasks,
-                'status_counts': status_counts,
-                'completed_products': completed_products,
-                'avg_profitability': avg_profitability,
-                'last_products': [
-                    {
-                        'name': p.product_name,
-                        'ozon_url': p.ozon_url,
-                        'alibaba_url': p.alibaba_url,
-                        'profitability': round(p.profitability_percent, 2),
-                        'created_at': p.created_at.strftime('%d.%m.%Y %H:%M')
-                    }
-                    for p in last_products
-                ]
+                'total': total_tasks,
+                'completed': completed_tasks,
+                'not_found': not_found_tasks,
+                'error': error_tasks,
+                'failed': failed_tasks,
+                'fatal': fatal_tasks,
+                'pending': pending_tasks,
+                'ozon_processed': ozon_processed_tasks
             }
-            
         except Exception as e:
-            logger.error(f"Ошибка при получении статистики: {e}")
-            return None
+            logger.error(f"Ошибка при получении статистики задач: {e}")
+            return {}
         finally:
-            if session:
-                session.close()
+            session.close()
 
     def get_product_info_by_url(self, url: str) -> dict:
         """
@@ -830,3 +850,480 @@ class Database:
         finally:
             if session:
                 session.close()
+
+    def add_user(self, telegram_id: int, username: str = None, first_name: str = None, last_name: str = None) -> User:
+        """
+        Добавление нового пользователя
+        
+        :param telegram_id: ID пользователя в Telegram
+        :param username: Имя пользователя в Telegram
+        :param first_name: Имя пользователя
+        :param last_name: Фамилия пользователя
+        :return: Объект пользователя
+        """
+        session = self.get_session()
+        try:
+            # Проверяем, существует ли пользователь
+            existing_user = session.query(User).filter(User.telegram_id == telegram_id).first()
+            if existing_user:
+                # Обновляем только базовую информацию
+                existing_user.username = username
+                existing_user.first_name = first_name
+                existing_user.last_name = last_name
+                session.commit()
+                return existing_user
+            
+            # Проверяем, является ли пользователь админом
+            is_admin = str(telegram_id) in os.getenv('ADMIN_IDS', '').split(',')
+            
+            # Создаем данные пользователя
+            user_data = {
+                'telegram_id': telegram_id,
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'is_admin': is_admin,
+                'subscription_type': 'free' if not is_admin else 'unlimited',
+                'requests_limit': 3 if not is_admin else None,
+                'requests_used': 0,
+                'notifications_enabled': True
+            }
+            
+            # Создаем нового пользователя
+            user = User(**user_data)
+            session.add(user)
+            session.commit()
+            
+            return user
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при добавлении пользователя: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_user_by_telegram_id(self, telegram_id: int) -> User:
+        """
+        Получение пользователя по Telegram ID
+        
+        :param telegram_id: ID пользователя в Telegram
+        :return: Объект пользователя
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.telegram_id == telegram_id).first()
+            if user:
+                # Создаем новый объект с данными из базы
+                user_data = {
+                    'id': user.id,
+                    'telegram_id': user.telegram_id,
+                    'username': user.username,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_admin': user.is_admin,
+                    'subscription_type': user.subscription_type,
+                    'requests_limit': user.requests_limit,
+                    'requests_used': user.requests_used,
+                    'subscription_end': user.subscription_end,
+                    'notifications_enabled': user.notifications_enabled
+                }
+                return User(**user_data)
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении пользователя: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_user_by_id(self, user_id: int) -> User:
+        """
+        Получение пользователя по ID
+        
+        :param user_id: ID пользователя
+        :return: Объект пользователя
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if user:
+                # Создаем новый объект с данными из базы
+                user_data = {
+                    'id': user.id,
+                    'telegram_id': user.telegram_id,
+                    'username': user.username,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_admin': user.is_admin,
+                    'subscription_type': user.subscription_type,
+                    'requests_limit': user.requests_limit,
+                    'requests_used': user.requests_used,
+                    'subscription_end': user.subscription_end,
+                    'notifications_enabled': user.notifications_enabled
+                }
+                return User(**user_data)
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении пользователя по ID: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_all_users(self) -> list:
+        """
+        Получение списка всех пользователей
+        
+        :return: Список пользователей
+        """
+        session = self.get_session()
+        try:
+            users = session.query(User).all()
+            result = []
+            
+            for user in users:
+                user_data = {
+                    'id': user.id,
+                    'telegram_id': user.telegram_id,
+                    'username': user.username,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_admin': user.is_admin,
+                    'subscription_type': user.subscription_type,
+                    'requests_limit': user.requests_limit,
+                    'requests_used': user.requests_used,
+                    'subscription_end': user.subscription_end,
+                    'notifications_enabled': user.notifications_enabled
+                }
+                result.append(user_data)
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка пользователей: {e}")
+            return []
+        finally:
+            session.close()
+
+    def get_user_tasks(self, user_id: int, status: str = None) -> list:
+        """
+        Получение задач пользователя
+        
+        :param user_id: ID пользователя
+        :param status: Статус задачи (опционально)
+        :return: Список задач
+        """
+        session = self.get_session()
+        try:
+            logger.info(f"Получение задач для пользователя {user_id} со статусом {status}")
+            
+            query = session.query(Task).filter(Task.user_id == user_id)
+            if status:
+                if status == 'active':
+                    # Для активных задач берем pending и ozon_processed
+                    query = query.filter(Task.status.in_(['pending', 'ozon_processed']))
+                else:
+                    query = query.filter(Task.status == status)
+            tasks = query.order_by(Task.created_at.desc()).all()
+            
+            logger.debug(f"Найдено {len(tasks)} задач")
+            
+            # Создаем список задач с необходимыми данными
+            result = []
+            for task in tasks:
+                task_data = {
+                    'id': task.id,
+                    'url': task.url,
+                    'status': task.status,
+                    'created_at': task.created_at
+                }
+                result.append(task_data)
+            
+            logger.debug(f"Подготовлено {len(result)} задач для возврата")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении задач пользователя: {e}")
+            return []
+        finally:
+            session.close()
+
+    def activate_subscription(self, user_id: int, subscription_type: str, days: int = 30, requests_limit: int = None, price: float = None) -> bool:
+        """
+        Активация подписки для пользователя
+        
+        :param user_id: ID пользователя
+        :param subscription_type: Тип подписки ('limited' или 'unlimited')
+        :param days: Количество дней подписки
+        :param requests_limit: Лимит запросов для limited подписки
+        :param price: Цена подписки
+        :return: True если активация успешна, False если нет
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            
+            # Устанавливаем дату окончания подписки
+            user.subscription_end = datetime.now() + timedelta(days=days)
+            user.subscription_type = subscription_type
+            user.requests_limit = requests_limit
+            user.requests_used = 0
+            user.subscription_price = price
+            
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при активации подписки: {e}")
+            return False
+        finally:
+            session.close()
+
+    def check_subscription(self, user_id: int) -> dict:
+        """
+        Проверяет статус подписки пользователя
+        
+        :param user_id: ID пользователя
+        :return: Словарь с информацией о подписке
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            
+            # Если пользователь админ, у него всегда есть доступ
+            if user.is_admin:
+                return {
+                    'is_active': True,
+                    'type': 'admin',
+                    'end_date': None,
+                    'requests_left': None,
+                    'requests_limit': None,
+                    'requests_used': 0
+                }
+            
+            # Проверяем срок действия подписки для платных подписок
+            subscription_expired = False
+            if user.subscription_type in ['limited', 'unlimited']:
+                if user.subscription_end and user.subscription_end < datetime.now():
+                    subscription_expired = True
+            
+            # Определяем количество оставшихся запросов
+            requests_left = None
+            if user.subscription_type in ['free', 'limited']:
+                requests_left = max(0, user.requests_limit - user.requests_used)
+            
+            # Определяем активность подписки
+            is_active = False
+            
+            # Для бесплатной подписки проверяем только количество запросов
+            if user.subscription_type == 'free':
+                is_active = user.requests_used < user.requests_limit
+            
+            # Для ограниченной подписки проверяем и срок, и количество запросов
+            elif user.subscription_type == 'limited':
+                is_active = not subscription_expired and user.requests_used < user.requests_limit
+            
+            # Для безлимитной подписки проверяем только срок
+            elif user.subscription_type == 'unlimited':
+                is_active = not subscription_expired
+            
+            return {
+                'is_active': is_active,
+                'type': user.subscription_type,
+                'end_date': user.subscription_end,
+                'requests_left': requests_left,
+                'requests_limit': user.requests_limit,
+                'requests_used': user.requests_used
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке подписки: {e}")
+            return None
+        finally:
+            session.close()
+
+    def increment_requests_used(self, user_id: int) -> bool:
+        """
+        Увеличение счетчика использованных запросов
+        
+        :param user_id: ID пользователя
+        :return: True если операция успешна, False если нет
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            
+            # Если пользователь админ или у него unlimited подписка, не увеличиваем счетчик
+            if user.is_admin or user.subscription_type == 'unlimited':
+                return True
+            
+            # Проверяем, не превышен ли лимит
+            if user.requests_limit is not None and user.requests_used >= user.requests_limit:
+                logger.warning(f"Превышен лимит запросов для пользователя {user_id}: {user.requests_used}/{user.requests_limit}")
+                return False
+            
+            # Увеличиваем счетчик использованных запросов
+            user.requests_used += 1
+            session.commit()
+            logger.info(f"Увеличен счетчик запросов для пользователя {user_id}: {user.requests_used}/{user.requests_limit}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при увеличении счетчика запросов: {e}")
+            return False
+        finally:
+            session.close()
+
+    def decrement_requests_used(self, user_id: int) -> bool:
+        """
+        Уменьшение счетчика использованных запросов
+        
+        :param user_id: ID пользователя
+        :return: True если операция успешна, False если нет
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            
+            # Уменьшаем счетчик использованных запросов, но не меньше 0
+            user.requests_used = max(0, user.requests_used - 1)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при уменьшении счетчика запросов: {e}")
+            return False
+        finally:
+            session.close()
+
+    def get_subscription_info(self) -> dict:
+        """
+        Получение информации о подписках
+        
+        :return: Словарь с информацией о подписках
+        """
+        return {
+            'free': {
+                'name': '🆓 Бесплатная',
+                'price': 0,
+                'requests': 3,
+                'features': [
+                    '3️⃣ бесплатных запроса',
+                    '📊 Базовый анализ товаров',
+                    '💰 Расчет маржинальности'
+                ]
+            },
+            'limited': {
+                'name': '💎 Расширенная',
+                'price': 1000,  # Цена в рублях
+                'requests': 100,  # Количество запросов
+                'features': [
+                    '💯 100 запросов в месяц',
+                    '📈 Расширенный анализ товаров',
+                    '⚡ Приоритетная обработка',
+                    '🔔 Поддержка 24/7'
+                ]
+            },
+            'unlimited': {
+                'name': '👑 Безлимитная',
+                'price': 3000,  # Цена в рублях
+                'requests': '∞',
+                'features': [
+                    '♾️ Безлимитное количество запросов',
+                    '🔍 Полный анализ товаров',
+                    '🚀 Максимальный приоритет',
+                    '👨‍💼 VIP поддержка 24/7',
+                    '🔮 Доступ к новым функциям'
+                ]
+            }
+        }
+
+    def update_notifications_settings(self, user_id: int, enabled: bool) -> bool:
+        """
+        Обновляет настройки уведомлений пользователя
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if user:
+                user.notifications_enabled = enabled
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении настроек уведомлений: {e}")
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_notifications_settings(self, user_id: int) -> bool:
+        """
+        Получает настройки уведомлений пользователя
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            return user.notifications_enabled if user else True  # По умолчанию включено
+        except Exception as e:
+            logger.error(f"Ошибка при получении настроек уведомлений: {e}")
+            return True  # По умолчанию включено
+        finally:
+            session.close()
+
+    def reset_requests_used(self, user_id: int) -> bool:
+        """
+        Сброс счетчика использованных запросов
+        
+        :param user_id: ID пользователя
+        :return: True если операция успешна, False если нет
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            
+            user.requests_used = 0
+            session.commit()
+            logger.info(f"Сброшен счетчик запросов для пользователя {user_id}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при сбросе счетчика запросов: {e}")
+            return False
+        finally:
+            session.close()
+
+    def update_task_status(self, task_id: int, status: str) -> bool:
+        """
+        Обновление статуса задачи
+        
+        :param task_id: ID задачи
+        :param status: Новый статус задачи
+        :return: True если обновление успешно, False если нет
+        """
+        session = self.get_session()
+        try:
+            task = session.query(Task).filter(Task.id == task_id).first()
+            if not task:
+                return False
+            
+            task.status = status
+            task.updated_at = datetime.now()
+            session.commit()
+            logger.info(f"Обновлен статус задачи {task_id} на {status}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении статуса задачи: {e}")
+            return False
+        finally:
+            session.close()

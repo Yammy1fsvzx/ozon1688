@@ -44,9 +44,8 @@ class BrowserManager:
                 chrome_options.add_argument('--no-sandbox')
                 chrome_options.add_argument('--disable-dev-shm-usage')
             else:
-                # Настройки для открытия на втором мониторе
+                # Настройки для обычного режима
                 chrome_options.add_argument('--window-size=1920,1080')  # Стандартное разрешение
-                chrome_options.add_argument('--window-position=1920,0')  # Позиция на втором мониторе (слева от основного)
                 chrome_options.add_argument('--disable-gpu')  # Отключаем GPU для лучшей производительности
             
             # Добавляем аргументы для работы с изображениями и всплывающими окнами
@@ -75,7 +74,6 @@ class BrowserManager:
             
             # Устанавливаем размер окна браузера
             driver.set_window_size(1920, 1080)  # Стандартное разрешение
-            driver.set_window_position(1920, 0)  # Позиция на втором мониторе
             
             # Устанавливаем таймаут загрузки страницы
             driver.set_page_load_timeout(60)

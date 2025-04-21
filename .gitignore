@@ -40,4 +40,12 @@ config.ini
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Data and logs
+data/
+logs/ 
