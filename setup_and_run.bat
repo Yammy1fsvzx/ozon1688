@@ -1,4 +1,7 @@
 @echo off
+chcp 65001 > nul
+
+echo --- Скрипт настройки и запуска Ozon1688 (Windows) ---
 
 REM Проверка существования директории venv
 IF NOT EXIST venv (
